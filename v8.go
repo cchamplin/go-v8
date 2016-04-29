@@ -24,7 +24,7 @@ var contexts = make(map[uint]*V8Context)
 var contextsMutex sync.RWMutex
 var highestContextId uint
 
-// A constant indicating that a particular script evaluation is not associated
+// NO_FILE is a constant indicating that a particular script evaluation is not associated
 // with any file.
 const NO_FILE = ""
 
@@ -35,66 +35,7 @@ type Value struct {
 	ctx *V8Context
 }
 
-// ToJSON converts the value to a JSON string.
-func (v *Value) ToJSON() string {
-	if v.ctx == nil || v.ptr == nil {
-		panic("Value or context were reset.")
-	}
-	str := C.PersistentToJSON(v.ctx.v8context, v.ptr)
-	defer C.free(unsafe.Pointer(str))
-	return C.GoString(str)
-}
-
-// ToString converts a value holding a JS String to a string.  If the value
-// is not actually a string, this will return an error.
-func (v *Value) ToString() (string, error) {
-	if v.ctx == nil || v.ptr == nil {
-		panic("Value or context were reset.")
-	}
-	var str string
-	err := json.Unmarshal([]byte(v.ToJSON()), &str)
-	return str, err
-}
-
-// Burst converts a value that represents a JS Object and returns a map of
-// key -> Value for each of the object's fields.  If the value is not an
-// Object, an error is returned.
-func (v *Value) Burst() (map[string]*Value, error) {
-	if v.ctx == nil || v.ptr == nil {
-		panic("Value or context were reset.")
-	}
-	// Call cgo to burst the object, get a list of KeyValuePairs back.
-	var numKeys C.int
-	keyValuesPtr := C.v8_BurstPersistent(v.ctx.v8context, v.ptr, &numKeys)
-
-	if keyValuesPtr == nil {
-		err := C.v8_error(v.ctx.v8context)
-		defer C.free(unsafe.Pointer(err))
-		return nil, errors.New(C.GoString(err) + ":" + v.ToJSON())
-	}
-
-	// Convert the list to a slice:
-	var keyValues []C.struct_KeyValuePair
-	sliceHeader := (*reflect.SliceHeader)((unsafe.Pointer(&keyValues)))
-	sliceHeader.Cap = int(numKeys)
-	sliceHeader.Len = int(numKeys)
-	sliceHeader.Data = uintptr(unsafe.Pointer(keyValuesPtr))
-
-	// Create the object map:
-	result := make(map[string]*Value)
-	for _, keyVal := range keyValues {
-		key := C.GoString(keyVal.keyName)
-		val := v.ctx.newValue(keyVal.value)
-
-		result[key] = val
-
-		// Don't forget to clean up!
-		C.free(unsafe.Pointer(keyVal.keyName))
-	}
-	return result, nil
-}
-
-// Returns the given field of the object.
+// Get returns the given field of the object.
 // TODO(mag): optimize.
 func (v *Value) Get(field string) (*Value, error) {
 	if v == nil {
@@ -110,14 +51,15 @@ func (v *Value) Get(field string) (*Value, error) {
 	}
 	res, exists := fields[field]
 	if !exists || res == nil {
-		return nil, fmt.Errorf("field '%s' is undefined.", field)
+		return nil, fmt.Errorf("field '%s' is undefined", field)
 	}
 	return res, nil
 }
 
+// Set will set the given field of the provided object.
 func (v *Value) Set(field string, val *Value) error {
 	if v.ctx == nil || v.ptr == nil {
-		panic("Value or context were reset.")
+		panic("Value or context were reset")
 	}
 	fieldPtr := C.CString(field)
 	defer C.free(unsafe.Pointer(fieldPtr))
@@ -126,89 +68,6 @@ func (v *Value) Set(field string, val *Value) error {
 		return errors.New(C.GoString(errmsg))
 	}
 	return nil
-}
-
-//export _go_v8_callback
-func _go_v8_callback(ctxID uint, name, args *C.char) *C.char {
-	runtime.UnlockOSThread()
-	defer runtime.LockOSThread()
-
-	contextsMutex.RLock()
-	c := contexts[ctxID]
-	contextsMutex.RUnlock()
-	f := c.funcs[C.GoString(name)]
-	if f != nil {
-		var argv []interface{}
-		json.Unmarshal([]byte(C.GoString(args)), &argv)
-		ret := f(argv...)
-		if ret != nil {
-			b, _ := json.Marshal(ret)
-			return C.CString(string(b))
-		}
-		return nil
-	}
-	return C.CString("undefined")
-}
-
-// TODO(mag): catch all panics in go functions, that are called from C code.
-//export _go_v8_callback_raw
-func _go_v8_callback_raw(
-	ctxID uint,
-	name *C.char,
-	callerFuncName, callerScriptName *C.char,
-	callerLineNumber, callerColumn C.int,
-	argc C.int,
-	argvptr C.PersistentValuePtr,
-) C.PersistentValuePtr {
-	runtime.UnlockOSThread()
-	defer runtime.LockOSThread()
-
-	funcname := C.GoString(name)
-
-	caller := Loc{
-		Funcname: C.GoString(callerFuncName),
-		Filename: C.GoString(callerScriptName),
-		Line:     int(callerLineNumber),
-		Column:   int(callerColumn),
-	}
-
-	contextsMutex.RLock()
-	ctx := contexts[ctxID]
-	contextsMutex.RUnlock()
-	function := ctx.rawFuncs[funcname]
-
-	var argv []C.PersistentValuePtr
-	sliceHeader := (*reflect.SliceHeader)((unsafe.Pointer(&argv)))
-	sliceHeader.Cap = int(argc)
-	sliceHeader.Len = int(argc)
-	sliceHeader.Data = uintptr(unsafe.Pointer(argvptr))
-
-	if function == nil {
-		panic(fmt.Errorf("No such registered raw function: %s", C.GoString(name)))
-	}
-
-	args := make([]*Value, argc)
-	for i := 0; i < int(argc); i++ {
-		args[i] = ctx.newValue(argv[i])
-	}
-
-	res, err := function(caller, args...)
-
-	if err != nil {
-		ctx.throw(err)
-		return nil
-	}
-
-	if res == nil {
-		return nil
-	}
-
-	if res.ctx.v8context != ctx.v8context {
-		panic(fmt.Errorf("Error processing return value of raw function callback %s: "+
-			"Return value was generated from another context.", C.GoString(name)))
-	}
-
-	return res.ptr
 }
 
 // Function is the callback signature for functions that are registered with
@@ -230,6 +89,8 @@ type Loc struct {
 // "from" will be empty. Never return a Value from a different V8 context.
 type RawFunction func(from Loc, args ...*Value) (*Value, error)
 
+// V8Isolate refers to a specific v8 Isolate for the execution of the v8 engine.
+// All contexts will run within a single Isolate
 type V8Isolate struct {
 	v8isolate C.IsolatePtr
 }
@@ -252,6 +113,8 @@ func init() {
 	platform = C.v8_init()
 	defaultIsolate = NewIsolate()
 }
+
+// NewIsolate returns a new V8Isolate
 func NewIsolate() *V8Isolate {
 	res := &V8Isolate{C.v8_create_isolate()}
 	runtime.SetFinalizer(res, func(i *V8Isolate) {
@@ -266,7 +129,7 @@ func NewContext() *V8Context {
 	return NewContextInIsolate(defaultIsolate)
 }
 
-// NewContext creates a V8 context in a given isolate
+// NewContextInIsolate creates a V8 context in a given isolate
 // and returns a handle to it.
 func NewContextInIsolate(isolate *V8Isolate) *V8Context {
 	v := &V8Context{
@@ -279,7 +142,7 @@ func NewContextInIsolate(isolate *V8Isolate) *V8Context {
 	}
 
 	contextsMutex.Lock()
-	highestContextId += 1
+	highestContextId++
 	v.id = highestContextId
 	contexts[v.id] = v
 	contextsMutex.Unlock()
@@ -290,7 +153,7 @@ func NewContextInIsolate(isolate *V8Isolate) *V8Context {
 	return v
 }
 
-// Releases the context handle and all the values allocated within the context.
+// Destroy releases the context handle and all the values allocated within the context.
 // NOTE: The context can't be used for anything after this function is called.
 func (v *V8Context) Destroy() error {
 	if v.v8context == nil {
@@ -308,7 +171,7 @@ func (v *V8Context) Destroy() error {
 	return nil
 }
 
-// Releases all the values allocated in this context.
+// ClearValues releases all the values allocated in this context.
 func (v *V8Context) ClearValues() error {
 	if v.v8context == nil {
 		panic("Context is uninitialized.")
@@ -321,7 +184,7 @@ func (v *V8Context) ClearValues() error {
 	return nil
 }
 
-// Releases the v8 hanle that val points to.
+// ReleaseValue releases the v8 handle that val points to.
 // NOTE: The val object can't be used after this function is called on it.
 func (v *V8Context) ReleaseValue(val *Value) error {
 	if v.v8context == nil {
@@ -351,7 +214,7 @@ func (v *V8Context) newValue(ptr C.PersistentValuePtr) *Value {
 	return res
 }
 
-// Stops the computation running inside the isolate.
+// Terminate Stops the computation running inside the isolate.
 func (iso *V8Isolate) Terminate() {
 	C.v8_terminate(iso.v8isolate)
 }
@@ -412,7 +275,8 @@ func (v *V8Context) throw(err error) {
 	C.v8_throw(v.v8context, msg)
 }
 
-// Call the named function within the v8 context with the specified parameters.
+// Run will call the named function within the v8 context with the
+// specified parameters.
 // Parameters are serialized via JSON.
 func (v *V8Context) Run(funcname string, args ...interface{}) (interface{}, error) {
 	if v.v8context == nil {
@@ -433,15 +297,6 @@ func (v *V8Context) Run(funcname string, args ...interface{}) (interface{}, erro
 	}
 	fmt.Fprint(&cmd, ")")
 	return v.Eval(cmd.String(), fmt.Sprintf("[RUN:%v]", funcname))
-}
-
-// FromJSON parses a JSON string and returns a Value that references the parsed
-// data in the V8 context.
-func (v *V8Context) FromJSON(s string) (*Value, error) {
-	if v.v8context == nil {
-		panic("Context is uninitialized.")
-	}
-	return v.EvalRaw("JSON.parse('"+template.JSEscapeString(s)+"')", "FromJSON")
 }
 
 // CreateJS evalutes the specified javascript object and returns a handle to the
@@ -469,8 +324,8 @@ func (v *V8Context) CreateJS(js, filename string) (*Value, error) {
 // The result of the javascript is returned as a handle to the result in the V8
 // engine if it succeeded, otherwise an error is returned.  Unlike Eval, this
 // does not do any JSON marshalling/unmarshalling of the results
-func (ctx *V8Context) EvalRaw(js string, filename string) (*Value, error) {
-	if ctx.v8context == nil {
+func (v *V8Context) EvalRaw(js string, filename string) (*Value, error) {
+	if v.v8context == nil {
 		panic("Context is uninitialized.")
 	}
 	runtime.LockOSThread()
@@ -482,14 +337,14 @@ func (ctx *V8Context) EvalRaw(js string, filename string) (*Value, error) {
 	filenamePtr := C.CString(filename)
 	defer C.free(unsafe.Pointer(filenamePtr))
 
-	ret := C.v8_eval(ctx.v8context, jsPtr, filenamePtr)
+	ret := C.v8_eval(v.v8context, jsPtr, filenamePtr)
 	if ret == nil {
-		err := C.v8_error(ctx.v8context)
+		err := C.v8_error(v.v8context)
 		defer C.free(unsafe.Pointer(err))
 		return nil, fmt.Errorf("Failed to execute JS (%s): %s", filename, C.GoString(err))
 	}
 
-	val := ctx.newValue(ret)
+	val := v.newValue(ret)
 
 	return val, nil
 }
@@ -498,8 +353,8 @@ func (ctx *V8Context) EvalRaw(js string, filename string) (*Value, error) {
 // parameters. If 'this' is nil, then the function is executed in the global
 // scope.  f must be a Value handle that holds a JS function.  Other
 // parameters may be any Value.
-func (ctx *V8Context) Apply(f, this *Value, args ...*Value) (*Value, error) {
-	if ctx.v8context == nil {
+func (v *V8Context) Apply(f, this *Value, args ...*Value) (*Value, error) {
+	if v.v8context == nil {
 		panic("Context is uninitialized.")
 	}
 	runtime.LockOSThread()
@@ -514,14 +369,14 @@ func (ctx *V8Context) Apply(f, this *Value, args ...*Value) (*Value, error) {
 	if this != nil {
 		thisPtr = this.ptr
 	}
-	ret := C.v8_apply(ctx.v8context, f.ptr, thisPtr, C.int(len(args)), &argPtrs[0])
+	ret := C.v8_apply(v.v8context, f.ptr, thisPtr, C.int(len(args)), &argPtrs[0])
 	if ret == nil {
-		err := C.v8_error(ctx.v8context)
+		err := C.v8_error(v.v8context)
 		defer C.free(unsafe.Pointer(err))
 		return nil, errors.New(C.GoString(err))
 	}
 
-	val := ctx.newValue(ret)
+	val := v.newValue(ret)
 
 	return val, nil
 }
@@ -568,23 +423,6 @@ func (v *V8Context) CreateRawFunc(f RawFunction) (fn *Value, err error) {
 		return _go_call_raw(%v, "%v", [].slice.call(arguments));
 	})`, v.id, name)
 	return v.EvalRaw(jscode, name)
-}
-
-// Attempts to convert a native Go value into a *Value.  If the native
-// value is a RawFunction, it will create a function Value.  Otherwise, the
-// value must be JSON serializable and the corresponding JS object will be
-// constructed.
-// NOTE: If the original object has several references to the same object,
-// in the resulting JS object those references will become independent objects.
-func (v *V8Context) ToValue(val interface{}) (*Value, error) {
-	if fn, isFunction := val.(func(Loc, ...*Value) (*Value, error)); isFunction {
-		return v.CreateRawFunc(fn)
-	}
-	data, err := json.Marshal(val)
-	if err != nil {
-		return nil, fmt.Errorf("Cannot marshal value as JSON: %v\nVal: %#v", err, val)
-	}
-	return v.FromJSON(string(data))
 }
 
 // Given any function, it will return the name (a/b/pkg.name), full filename
