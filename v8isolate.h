@@ -4,6 +4,7 @@
 #include "v8.h"
 #include "v8context.h"
 #include "v8wrap.h"
+#include "libplatform/libplatform.h"
 
 class ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
  public:
@@ -18,7 +19,7 @@ class V8Isolate {
   ~V8Isolate();
 
   V8Context* MakeContext();
-
+  void PumpMessageLoop(v8::Platform *platform);
   // May be called any any time, will forcefully terminate the VM.
   void Terminate();
 

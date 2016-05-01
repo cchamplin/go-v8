@@ -9,6 +9,8 @@ extern "C" PlatformPtr v8_init() {
   v8::Platform *platform = v8::platform::CreateDefaultPlatform();
   v8::V8::InitializePlatform(platform);
   v8::V8::Initialize();
+  std::string v8_flags = "--expose-gc";
+  v8::V8::SetFlagsFromString(v8_flags.c_str(),v8_flags.size());
   return (void *)platform;
 }
 
@@ -29,9 +31,92 @@ extern "C" void v8_release_context(ContextPtr ctx) {
   delete static_cast<V8Context *>(ctx);
 }
 
+extern "C" void v8_pump_loop(IsolatePtr isolate,PlatformPtr platform) {
+  static_cast<V8Isolate *>(isolate)->PumpMessageLoop(static_cast<v8::Platform *>(platform));
+}
+
+
 extern "C" char *v8_execute(ContextPtr ctx, char *str, char *debugFilename) {
   return (static_cast<V8Context *>(ctx))->Execute(str, debugFilename);
 }
+
+extern "C" ObjectPtr v8_get_internal_pointer(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->GetInternalPointer(val);
+}
+
+extern "C" PersistentValuePtr v8_wrap(ContextPtr ctx, ObjectPtr identifier,PersistentValuePtr funcTemplate) {
+  return (static_cast<V8Context *>(ctx))->Wrap(identifier,funcTemplate);
+}
+
+extern "C" PersistentValuePtr v8_create_object_prototype(ContextPtr ctx) {
+  return (static_cast<V8Context *>(ctx))->CreateObjectPrototype();
+}
+ extern "C" void v8_add_method(ContextPtr ctx, char *str, FuncPtr callback, PersistentValuePtr funcTemplate) {
+   (static_cast<V8Context *>(ctx))->AddWrappedMethod(str, callback,funcTemplate);
+ }
+
+extern "C" PersistentValuePtr v8_create_integer(ContextPtr ctx, long long int val) {
+  return (static_cast<V8Context *>(ctx))->CreateInteger(val);
+}
+
+extern "C" PersistentValuePtr v8_create_unsigned_integer(ContextPtr ctx, long long unsigned int val) {
+  return (static_cast<V8Context *>(ctx))->CreateUnsignedInteger(val);
+}
+
+extern "C" PersistentValuePtr v8_create_float(ContextPtr ctx, float val) {
+  return (static_cast<V8Context *>(ctx))->CreateFloat(val);
+}
+
+extern "C" PersistentValuePtr v8_create_double(ContextPtr ctx, double val) {
+  return (static_cast<V8Context *>(ctx))->CreateDouble(val);
+}
+
+
+extern "C" PersistentValuePtr v8_create_bool(ContextPtr ctx, bool val) {
+  return (static_cast<V8Context *>(ctx))->CreateBool(val);
+}
+
+extern "C" PersistentValuePtr v8_create_string(ContextPtr ctx, char *val) {
+  return (static_cast<V8Context *>(ctx))->CreateString(val);
+}
+
+extern "C" PersistentValuePtr v8_create_undefined(ContextPtr ctx) {
+  return (static_cast<V8Context *>(ctx))->CreateUndefined();
+}
+
+extern "C" PersistentValuePtr v8_create_null(ContextPtr ctx) {
+  return (static_cast<V8Context *>(ctx))->CreateNull();
+}
+
+
+extern "C" bool v8_convert_to_int64(ContextPtr ctx, PersistentValuePtr val, long long int* out) {
+  return (static_cast<V8Context *>(ctx))->ConvertToInt64(val,out);
+}
+
+extern "C" bool v8_convert_to_int(ContextPtr ctx, PersistentValuePtr val, long int* out) {
+  return (static_cast<V8Context *>(ctx))->ConvertToInt(val,out);
+}
+
+extern "C" bool v8_convert_to_uint(ContextPtr ctx, PersistentValuePtr val, long long unsigned int* out) {
+  return (static_cast<V8Context *>(ctx))->ConvertToUint(val,out);
+}
+
+extern "C" bool v8_convert_to_float(ContextPtr ctx, PersistentValuePtr val, float* out) {
+  return (static_cast<V8Context *>(ctx))->ConvertToFloat(val,out);
+}
+
+extern "C" bool v8_convert_to_double(ContextPtr ctx, PersistentValuePtr val, double* out) {
+  return (static_cast<V8Context *>(ctx))->ConvertToDouble(val,out);
+}
+
+extern "C" bool v8_convert_to_bool(ContextPtr ctx, PersistentValuePtr val, bool* out) {
+  return (static_cast<V8Context *>(ctx))->ConvertToBool(val,out);
+}
+
+extern "C" bool v8_get_typed_backing(ContextPtr ctx, PersistentValuePtr val, char** out, int* length) {
+  return (static_cast<V8Context *>(ctx))->GetTypedArrayBacking(val,out,length);
+}
+
 
 extern "C" PersistentValuePtr v8_eval(ContextPtr ctx, char *str,
                                       char *debugFilename) {
@@ -67,6 +152,10 @@ extern "C" const char *v8_setPersistentField(ContextPtr ctx,
 extern "C" void v8_release_persistent(ContextPtr ctx,
                                       PersistentValuePtr persistent) {
   (static_cast<V8Context *>(ctx))->ReleasePersistent(persistent);
+}
+extern "C" void v8_weaken_persistent(ContextPtr ctx,
+                                      PersistentValuePtr persistent) {
+  (static_cast<V8Context *>(ctx))->WeakenPersistent(persistent);
 }
 
 extern "C" char *v8_error(ContextPtr ctx) {

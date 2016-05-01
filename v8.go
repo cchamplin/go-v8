@@ -21,6 +21,9 @@ import (
 )
 
 var contexts = make(map[uint]*V8Context)
+var internals = make(map[uintptr]*V8Wrapped)
+
+var internalsMu sync.Mutex
 var contextsMutex sync.RWMutex
 var highestContextId uint
 
@@ -31,8 +34,17 @@ const NO_FILE = ""
 // Value represents a handle to a V8::Value.  It is associated with a particular
 // context and attempts to use it with a different context will fail.
 type Value struct {
-	ptr C.PersistentValuePtr
-	ctx *V8Context
+	ptr  C.PersistentValuePtr
+	ctx  *V8Context
+	weak bool
+}
+
+// Prototype represents a object prototype that can be used to instantiate
+// wrapped objects
+type Prototype struct {
+	ctx   *V8Context
+	ptr   C.PersistentValuePtr
+	funcs map[string]RawFunction
 }
 
 // Get returns the given field of the object.
@@ -75,6 +87,10 @@ func (v *Value) Set(field string, val *Value) error {
 // unmarshaled into Go interface{}s via json.Unmarshal.
 type Function func(...interface{}) interface{}
 
+// DisposalFunction is a call back to be invoked when an instantiated prototype
+// is disposed by the v8 garbage collector.
+type DisposalFunction func(obj interface{}, val *Value)
+
 // Loc defines a script location.
 type Loc struct {
 	Funcname, Filename string
@@ -89,6 +105,11 @@ type Loc struct {
 // "from" will be empty. Never return a Value from a different V8 context.
 type RawFunction func(from Loc, args ...*Value) (*Value, error)
 
+// GetterFunction is a callback to be invoked when a instantiated prototype
+// received a property resolution within v8. This can be used to return values
+// for wrapped native interfaces.
+type GetterFunction func(ctx *V8Context, internal interface{}, propName string) (*Value, error)
+
 // V8Isolate refers to a specific v8 Isolate for the execution of the v8 engine.
 // All contexts will run within a single Isolate
 type V8Isolate struct {
@@ -97,13 +118,25 @@ type V8Isolate struct {
 
 // V8Context is a handle to a v8 context.
 type V8Context struct {
-	id        uint
-	v8context C.ContextPtr
-	v8isolate *V8Isolate
-	funcs     map[string]Function
-	rawFuncs  map[string]RawFunction
-	values    map[*Value]bool
-	valuesMu  *sync.Mutex
+	id           uint
+	v8context    C.ContextPtr
+	v8isolate    *V8Isolate
+	funcs        map[string]Function
+	rawFuncs     map[string]RawFunction
+	values       map[*Value]bool
+	valuesMu     *sync.Mutex
+	prototypes   map[string]*Prototype
+	prototypesMu *sync.Mutex
+}
+
+// V8Wrapped is a container for an instaniated prototype object
+type V8Wrapped struct {
+	identifier      uintptr
+	external        *Value
+	getter          GetterFunction
+	internal        interface{}
+	disposeCallback DisposalFunction
+	ctx             *V8Context
 }
 
 var platform C.PlatformPtr
@@ -133,12 +166,14 @@ func NewContext() *V8Context {
 // and returns a handle to it.
 func NewContextInIsolate(isolate *V8Isolate) *V8Context {
 	v := &V8Context{
-		v8context: C.v8_create_context(isolate.v8isolate),
-		v8isolate: isolate,
-		funcs:     make(map[string]Function),
-		rawFuncs:  make(map[string]RawFunction),
-		values:    make(map[*Value]bool),
-		valuesMu:  &sync.Mutex{},
+		v8context:    C.v8_create_context(isolate.v8isolate),
+		v8isolate:    isolate,
+		funcs:        make(map[string]Function),
+		rawFuncs:     make(map[string]RawFunction),
+		values:       make(map[*Value]bool),
+		valuesMu:     &sync.Mutex{},
+		prototypes:   make(map[string]*Prototype),
+		prototypesMu: &sync.Mutex{},
 	}
 
 	contextsMutex.Lock()
@@ -159,6 +194,7 @@ func (v *V8Context) Destroy() error {
 	if v.v8context == nil {
 		return errors.New("Context is uninitialized.")
 	}
+	ClearInternals(v)
 	v.ClearValues()
 
 	contextsMutex.Lock()
@@ -184,6 +220,37 @@ func (v *V8Context) ClearValues() error {
 	return nil
 }
 
+// ClearInternals releases all internally allocated wrapped prototypes.
+func ClearInternals(ctx *V8Context) error {
+	if ctx == nil {
+		panic("Context is uninitialized.")
+	}
+	internalsMu.Lock()
+	for _, val := range internals {
+		if val.ctx == ctx {
+			if val.disposeCallback != nil {
+				val.disposeCallback(val.internal, val.external)
+			}
+			ctx.ReleaseValue(val.external)
+			delete(internals, val.identifier)
+		}
+	}
+	internalsMu.Unlock()
+	return nil
+}
+
+// CountValues returns the total number of Value references maintained by
+// a context.
+func (v *V8Context) CountValues() int {
+	if v.v8context == nil {
+		panic("Context is uninitialized.")
+	}
+	v.valuesMu.Lock()
+	count := len(v.values)
+	v.valuesMu.Unlock()
+	return count
+}
+
 // ReleaseValue releases the v8 handle that val points to.
 // NOTE: The val object can't be used after this function is called on it.
 func (v *V8Context) ReleaseValue(val *Value) error {
@@ -199,6 +266,24 @@ func (v *V8Context) ReleaseValue(val *Value) error {
 	return nil
 }
 
+// WeakenValue will have v8 internally weaken the references to a persistent
+// value reference. This will allow it to be properly GCed by v8 when there
+// are no longer any v8 references to the object
+// NOTE: This should only be called if the Go environment will never make use
+// of the Value again.
+func (v *V8Context) WeakenValue(val *Value) error {
+	if v.v8context == nil {
+		panic("Context is uninitialized.")
+	}
+	v.valuesMu.Lock()
+	defer v.valuesMu.Unlock()
+	if val.ptr == nil {
+		return errors.New("Value has been already released.")
+	}
+	v.weakenValueLocked(val)
+	return nil
+}
+
 // Dispose of the persistent object and free the allocated handle.
 func (v *V8Context) releaseValueLocked(val *Value) {
 	val.ctx = nil
@@ -206,12 +291,32 @@ func (v *V8Context) releaseValueLocked(val *Value) {
 	C.v8_release_persistent(v.v8context, val.ptr)
 }
 
+func (v *V8Context) weakenValueLocked(val *Value) {
+	val.weak = true
+	delete(v.values, val)
+	C.v8_weaken_persistent(v.v8context, val.ptr)
+}
+
 func (v *V8Context) newValue(ptr C.PersistentValuePtr) *Value {
-	res := &Value{ptr, v}
+	res := &Value{ptr, v, false}
 	v.valuesMu.Lock()
 	v.values[res] = true
 	v.valuesMu.Unlock()
 	return res
+}
+
+func (v *V8Context) newPrototype(name string, ptr C.PersistentValuePtr) *Prototype {
+	res := &Prototype{ptr: ptr, ctx: v, funcs: make(map[string]RawFunction)}
+	v.prototypesMu.Lock()
+	v.prototypes[name] = res
+	v.prototypesMu.Unlock()
+	return res
+}
+
+func newInternal(wrapped *V8Wrapped) {
+	internalsMu.Lock()
+	internals[wrapped.identifier] = wrapped
+	internalsMu.Unlock()
 }
 
 // Terminate Stops the computation running inside the isolate.
@@ -349,6 +454,77 @@ func (v *V8Context) EvalRaw(js string, filename string) (*Value, error) {
 	return val, nil
 }
 
+// CreatePrototype creates a new v8 object prototype that can be instantiated
+// with a local inferface to create wrapped objects
+func (v *V8Context) CreatePrototype(name string) (*Prototype, bool, error) {
+	if proto, ok := v.prototypes[name]; ok {
+		return proto, false, nil
+	}
+	ret := C.v8_create_object_prototype(v.v8context)
+	if ret == nil {
+		err := C.v8_error(v.v8context)
+		defer C.free(unsafe.Pointer(err))
+		return nil, false, fmt.Errorf("Failed to create prototype (%s): %s", name, C.GoString(err))
+	}
+	val := v.newPrototype(name, ret)
+	return val, true, nil
+}
+
+// AddMethod associates a RawFunction with a v8 object prototype
+// NOTE: The method is preserved on the v8 side via an unsafe pointer
+// this is potentially dangerous if Go's GC relocates data and changes pointers
+// TODO: Confirm this is "safe enough:
+func (p *Prototype) AddMethod(name string, f RawFunction) {
+
+	fn := C.FuncPtr(unsafe.Pointer(&f))
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+
+	C.v8_add_method(p.ctx.v8context, cName, fn, p.ptr)
+	// We have to keep a reference to the function in case it gets
+	// disposed of on the Go side
+	p.funcs[name] = f
+}
+
+// Instantiate will create a v8 Value from a v8 object Prototype
+// The value wraps a native interface.
+// Callbacks can be provided for object property gets and object GC disposal
+// NOTE: The instance is preserved on the v8 side via an unsafe pointer
+// this is potentially dangerous if Go's GC relocates data and changes pointers
+// TODO: Confirm this is "safe enough:
+func (p *Prototype) Instantiate(obj interface{}, getter GetterFunction, disposerCB DisposalFunction) (*Value, error) {
+	if p.ctx == nil {
+		panic("Prototype has no context.")
+	}
+	if p.ctx.v8context == nil {
+		panic("Context is uninitialized.")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	wrapped := &V8Wrapped{
+		internal:        obj,
+		getter:          getter,
+		disposeCallback: disposerCB,
+		ctx:             p.ctx,
+	}
+	identifier := unsafe.Pointer(wrapped)
+	ret := C.v8_wrap(p.ctx.v8context, C.ObjectPtr(identifier), p.ptr)
+	if ret == nil {
+		err := C.v8_error(p.ctx.v8context)
+		defer C.free(unsafe.Pointer(err))
+		return nil, fmt.Errorf("Failed to wrap object")
+	}
+
+	val := p.ctx.newValue(ret)
+	wrapped.external = val
+	wrapped.identifier = uintptr(identifier)
+
+	newInternal(wrapped)
+
+	return val, nil
+}
+
 // Apply will execute a JS Function with the specified 'this' context and
 // parameters. If 'this' is nil, then the function is executed in the global
 // scope.  f must be a Value handle that holds a JS function.  Other
@@ -423,6 +599,12 @@ func (v *V8Context) CreateRawFunc(f RawFunction) (fn *Value, err error) {
 		return _go_call_raw(%v, "%v", [].slice.call(arguments));
 	})`, v.id, name)
 	return v.EvalRaw(jscode, name)
+}
+
+// PumpMessageLoop will send a request to v8 allowing it to perform
+// queued backgroun tasks
+func (v *V8Context) PumpMessageLoop() {
+	C.v8_pump_loop(v.v8isolate.v8isolate, platform)
 }
 
 // Given any function, it will return the name (a/b/pkg.name), full filename

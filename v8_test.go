@@ -651,7 +651,7 @@ func TestRawFuncOrigin(t *testing.T) {
 		};
 		inner();
 		middle();`, "middle.js")
-	ctx.Eval(`
+	ctx.Eval(`()
 		inner();
 		middle();`, "outer.js")
 }
@@ -985,5 +985,369 @@ func TestThrow(t *testing.T) {
 		t.Error("Unexpected error: ", err)
 	} else if res.(float64) != 3 {
 		t.Error("Wrong result: ", res)
+	}
+}
+
+type TestStruct struct {
+	a int
+	b bool
+	c string
+}
+
+type TestInterface interface {
+	doSomething() string
+}
+
+func (t TestStruct) doSomething() string {
+	return "Bar"
+}
+
+func TestInterfaceWrap(t *testing.T) {
+	ctx := NewContext()
+	proto, isNew, err := ctx.CreatePrototype("TestInterface")
+	if err != nil {
+		t.Error("Unexpected error:", err)
+	}
+
+	instance := TestStruct{}
+
+	called := false
+	if isNew {
+		proto.AddMethod("doSomething", func(_ Loc, args ...*Value) (*Value, error) {
+			called = true
+			val, err := ctx.ToValue(instance.doSomething())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return val, nil
+		})
+	} else {
+		t.Error("Prototype already exists")
+	}
+
+	jsObject, err := proto.Instantiate(instance, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx.AddRawFunc("getObject", func(_ Loc, args ...*Value) (*Value, error) { return jsObject, nil })
+	if res, err := ctx.Eval("getObject().doSomething()", "test"); err != nil {
+		t.Fatal(err)
+	} else if !called {
+		t.Error("Function was not called.")
+	} else if res != "Bar" {
+		t.Errorf("Got [%#v] instead of Bar", res)
+	}
+
+}
+
+func TestStructureWrap(t *testing.T) {
+	ctx := NewContext()
+	proto, _, err := ctx.CreatePrototype("TestInterface")
+	if err != nil {
+		t.Error("Unexpected error:", err)
+	}
+
+	instance := TestStruct{a: 15, b: true, c: "foo"}
+
+	propGetter := func(ctx *V8Context, internal interface{}, propName string) (*Value, error) {
+		wrapped, ok := internal.(TestStruct)
+		if !ok {
+			t.Fatal("Could not cast value back to structure")
+			return nil, nil
+		}
+		switch propName {
+		case "a":
+			return ctx.ToValue(wrapped.a)
+		case "b":
+			return ctx.ToValue(wrapped.b)
+		case "c":
+			return ctx.ToValue(wrapped.c)
+		}
+		return nil, nil
+	}
+
+	jsObject, err := proto.Instantiate(instance, propGetter, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx.AddRawFunc("getObject", func(_ Loc, args ...*Value) (*Value, error) { return jsObject, nil })
+	if res, err := ctx.Eval("getObject().a", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(float64) != 15 {
+		t.Errorf("Got [%#v] instead of TEST", res)
+	}
+
+	if res, err := ctx.Eval("getObject().b", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Got [%#v] instead of true", res)
+	}
+
+	if res, err := ctx.Eval("getObject().c", "test"); err != nil {
+		t.Fatal(err)
+	} else if res != "foo" {
+		t.Errorf("Got [%#v] instead of foo", res)
+	}
+
+}
+
+func TestWrappedGC(t *testing.T) {
+	ctx := NewContext()
+	proto, _, err := ctx.CreatePrototype("TestInterface")
+	if err != nil {
+		t.Error("Unexpected error:", err)
+	}
+
+	instance := TestStruct{a: 15, b: true, c: "foo"}
+
+	propGetter := func(ctx *V8Context, internal interface{}, propName string) (*Value, error) {
+
+		wrapped, ok := internal.(TestStruct)
+		if !ok {
+			t.Fatal("Could not cast value back to structure")
+			return nil, nil
+		}
+		switch propName {
+		case "a":
+			return ctx.ToValue(wrapped.a)
+		case "b":
+			return ctx.ToValue(wrapped.b)
+		case "c":
+			return ctx.ToValue(wrapped.c)
+		}
+		return nil, nil
+	}
+	disposed := false
+	dispose := func(obj interface{}, val *Value) {
+		disposed = true
+	}
+
+	jsObject, err := proto.Instantiate(instance, propGetter, dispose)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx.AddRawFunc("getObject", func(_ Loc, args ...*Value) (*Value, error) { return jsObject, nil })
+	if _, err := ctx.Eval("var x = getObject(); x = null; gc();", "test"); err != nil {
+		t.Fatal(err)
+	} else if disposed != true {
+		t.Errorf("Never recieved disposed callback")
+	}
+
+}
+
+func TestConvertInternal(t *testing.T) {
+	ctx := NewContext()
+	proto, _, err := ctx.CreatePrototype("TestInterface")
+	if err != nil {
+		t.Error("Unexpected error:", err)
+	}
+
+	instance := TestStruct{a: 15, b: true, c: "foo"}
+
+	jsObject, err := proto.Instantiate(instance, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx.AddRawFunc("getObject", func(_ Loc, args ...*Value) (*Value, error) { return jsObject, nil })
+	res, err := ctx.EvalRaw("getObject()", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	marshalledInstance, err := ctx.TryConvertInternal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marshalledInstance == nil {
+		t.Errorf("Unable to cast to internal instance")
+	}
+	castedInstance, ok := marshalledInstance.(TestStruct)
+	if !ok {
+		t.Errorf("Failed to convert marshalled data to local structure")
+	}
+	if castedInstance.c != instance.c {
+		t.Errorf("Instances do not match")
+	}
+}
+
+func TestV8Conversion(t *testing.T) {
+	ctx := NewContext()
+	ctx.AddRawFunc("getInt8", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(int8(8)) })
+	ctx.AddRawFunc("getInt16", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(int16(16)) })
+	ctx.AddRawFunc("getInt32", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(int32(32)) })
+	ctx.AddRawFunc("getInt64", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(int64(64)) })
+	ctx.AddRawFunc("getUint8", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(uint8(8)) })
+	ctx.AddRawFunc("getUint16", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(uint16(16)) })
+	ctx.AddRawFunc("getUint32", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(uint32(32)) })
+	ctx.AddRawFunc("getUint64", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(uint64(64)) })
+	ctx.AddRawFunc("getFloat", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(float32(32)) })
+	ctx.AddRawFunc("getDouble", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(float64(64.64)) })
+	ctx.AddRawFunc("getBool", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(bool(true)) })
+	ctx.AddRawFunc("getString", func(_ Loc, args ...*Value) (*Value, error) { return ctx.ToValue(string("foo")) })
+
+	if res, err := ctx.Eval("getInt8() == 8", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Int8 type conversion failed")
+	}
+	if res, err := ctx.Eval("getInt16() == 16", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Int16 type conversion failed")
+	}
+	if res, err := ctx.Eval("getInt32() == 32", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Int32 type conversion failed")
+	}
+	if res, err := ctx.Eval("getInt64() == 64", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Int32 type conversion failed")
+	}
+	if res, err := ctx.Eval("getInt64() == 64", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Int64 type conversion failed")
+	}
+	if res, err := ctx.Eval("getUint8() == 8", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Uint8 type conversion failed")
+	}
+	if res, err := ctx.Eval("getUint16() == 16", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Uint16 type conversion failed")
+	}
+	if res, err := ctx.Eval("getUint32() == 32", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Uint32 type conversion failed")
+	}
+	if res, err := ctx.Eval("getUint64() == 64", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Uint64 type conversion failed")
+	}
+	if res, err := ctx.Eval("getFloat() == 32", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Float32 type conversion failed")
+	}
+	if res, err := ctx.Eval("getDouble() == 64.64", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Float64 type conversion failed")
+	}
+	if res, err := ctx.Eval("getBool() == true", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Bool type conversion failed")
+	}
+	if res, err := ctx.Eval("getString() == \"foo\"", "test"); err != nil {
+		t.Fatal(err)
+	} else if res.(bool) != true {
+		t.Errorf("Int16 type conversion failed")
+	}
+
+}
+
+func TestGoConversion(t *testing.T) {
+	ctx := NewContext()
+
+	if res, err := ctx.EvalRaw("8", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToInt8(); err != nil {
+		t.Errorf("Int8 type conversion failed")
+	} else if cast != 8 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("16", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToInt16(); err != nil {
+		t.Errorf("Int16 type conversion failed")
+	} else if cast != 16 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("32", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToInt32(); err != nil {
+		t.Errorf("Int32 type conversion failed")
+	} else if cast != 32 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("64", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToInt64(); err != nil {
+		t.Errorf("Int64 type conversion failed")
+	} else if cast != 64 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("8", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToUint8(); err != nil {
+		t.Errorf("Uint8 type conversion failed")
+	} else if cast != 8 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("16", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToUint16(); err != nil {
+		t.Errorf("Uint16 type conversion failed")
+	} else if cast != 16 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("32", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToUint32(); err != nil {
+		t.Errorf("Uint32 type conversion failed")
+	} else if cast != 32 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("64", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToUint64(); err != nil {
+		t.Errorf("Uint64 type conversion failed")
+	} else if cast != 64 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("32.32", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToFloat32(); err != nil {
+		t.Errorf("Float32 type conversion failed")
+	} else if cast != 32.32 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("64.64", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToFloat64(); err != nil {
+		t.Errorf("Float64 type conversion failed")
+	} else if cast != 64.64 {
+		t.Errorf("Received unexpected cast value")
+	}
+	if res, err := ctx.EvalRaw("true", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToBool(); err != nil {
+		t.Errorf("Boolean type conversion failed")
+	} else if cast != true {
+		t.Errorf("Received unexpected cast value")
+	}
+
+}
+
+func TestByteArrayConversion(t *testing.T) {
+	ctx := NewContext()
+
+	if res, err := ctx.EvalRaw("new Uint8Array([4,8,15,16,23,42]);", "test"); err != nil {
+		t.Fatal(err)
+	} else if cast, err := res.ToBytes(); err != nil {
+		t.Errorf("Byte array type conversion failed")
+	} else if cast[0] != 4 || cast[1] != 8 || cast[2] != 15 || cast[3] != 16 || cast[4] != 23 || cast[5] != 42 {
+		t.Errorf("Received unexpected byte values: %v", cast)
 	}
 }

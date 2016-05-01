@@ -20,6 +20,14 @@ V8Isolate::V8Isolate() {
   isolate_ = v8::Isolate::New(create_params);
 }
 
+void V8Isolate::PumpMessageLoop(v8::Platform *platform) {
+  v8::Locker locker(isolate_);
+  v8::Isolate::Scope isolate_scope(isolate_);
+  v8::HandleScope handle_scope(isolate_);
+  v8::SealHandleScope seal(isolate_);
+  v8::platform::PumpMessageLoop(static_cast<v8::Platform *>(platform),isolate_);
+}
+
 V8Context* V8Isolate::MakeContext() { return new V8Context(isolate_); }
 
 V8Isolate::~V8Isolate() { isolate_->Dispose(); }
