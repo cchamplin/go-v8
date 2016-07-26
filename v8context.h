@@ -8,7 +8,7 @@
 
 class V8Context {
  public:
-  V8Context(v8::Isolate* isolate);
+  V8Context(v8::Isolate* isolate,uint32_t id);
   ~V8Context();
 
   char* Execute(const char* source, const char* filename);
@@ -23,6 +23,7 @@ class V8Context {
   PersistentValuePtr CreateDouble(double val);
   PersistentValuePtr CreateNull();
   PersistentValuePtr CreateUndefined();
+  PersistentValuePtr CreateObjectArray(PersistentValuePtr *ptrs, int length);
 
 
   bool ConvertToInt(PersistentValuePtr val, long int* out);
@@ -33,12 +34,32 @@ class V8Context {
   bool ConvertToBool(PersistentValuePtr val, bool* out);
   bool GetTypedArrayBacking(PersistentValuePtr val, char** out, int* length);
 
+  bool IsArrayBuffer(PersistentValuePtr val);
+  bool IsDataView(PersistentValuePtr val);
+  bool IsDate(PersistentValuePtr val);
+  bool IsMap(PersistentValuePtr val);
+  bool IsMapIterator(PersistentValuePtr val);
+  bool IsPromise(PersistentValuePtr val);
+  bool IsRegExp(PersistentValuePtr val);
+  bool IsSetIterator(PersistentValuePtr val);
+  bool IsSet(PersistentValuePtr val);
+  bool IsTypedArray(PersistentValuePtr val);
+
+
 
   PersistentValuePtr Eval(const char* str, const char* debugFilename);
+  PersistentValuePtr EvalWithContext(const char* str, const char* debugFilename, int lineNumber, int column);
+  PersistentValuePtr CompileRunModule(const char* str,const char* filename);
 
   PersistentValuePtr CreateObjectPrototype();
+  PersistentValuePtr CreateClassPrototype(const char* str);
+    PersistentValuePtr GetClassConstructor(PersistentValuePtr funcTemplate);
+    
   void AddWrappedMethod(const char* name, FuncPtr callback, PersistentValuePtr funcTemplate);
+
   PersistentValuePtr Wrap(ObjectPtr identifier, PersistentValuePtr funcTemplate);
+  PersistentValuePtr WrapInstance(ObjectPtr identifier, PersistentValuePtr instance);
+
   ObjectPtr GetInternalPointer(PersistentValuePtr val);
 
   PersistentValuePtr Apply(PersistentValuePtr func, PersistentValuePtr self,
@@ -56,9 +77,10 @@ class V8Context {
                                  const char* field, PersistentValuePtr value);
 
   void Throw(const char* errmsg);
-
+  v8::Local<v8::Context> GetContext();
  private:
   std::string report_exception(v8::TryCatch& try_catch);
+  uint32_t  mId;
 
   v8::Isolate* mIsolate;
   v8::Persistent<v8::Context> mContext;

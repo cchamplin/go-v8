@@ -9,7 +9,7 @@ extern "C" PlatformPtr v8_init() {
   v8::Platform *platform = v8::platform::CreateDefaultPlatform();
   v8::V8::InitializePlatform(platform);
   v8::V8::Initialize();
-  std::string v8_flags = "--expose-gc";
+  std::string v8_flags = "--expose-gc --harmony-modules";
   v8::V8::SetFlagsFromString(v8_flags.c_str(),v8_flags.size());
   return (void *)platform;
 }
@@ -22,9 +22,9 @@ extern "C" void v8_release_isolate(IsolatePtr isolate) {
   delete static_cast<V8Isolate *>(isolate);
 }
 
-extern "C" ContextPtr v8_create_context(IsolatePtr isolate) {
+extern "C" ContextPtr v8_create_context(IsolatePtr isolate, uint32_t id) {
   return static_cast<ContextPtr>(
-      static_cast<V8Isolate *>(isolate)->MakeContext());
+      static_cast<V8Isolate *>(isolate)->MakeContext(id));
 }
 
 extern "C" void v8_release_context(ContextPtr ctx) {
@@ -51,6 +51,19 @@ extern "C" PersistentValuePtr v8_wrap(ContextPtr ctx, ObjectPtr identifier,Persi
 extern "C" PersistentValuePtr v8_create_object_prototype(ContextPtr ctx) {
   return (static_cast<V8Context *>(ctx))->CreateObjectPrototype();
 }
+
+extern "C" PersistentValuePtr v8_create_class_prototype(ContextPtr ctx, char *str) {
+  return (static_cast<V8Context *>(ctx))->CreateClassPrototype(str);
+}
+
+extern "C" PersistentValuePtr v8_wrap_instance(ContextPtr ctx,ObjectPtr identifier, PersistentValuePtr instance) {
+  return (static_cast<V8Context *>(ctx))->WrapInstance(identifier, instance);
+}
+
+extern "C" PersistentValuePtr v8_get_class_constructor(ContextPtr ctx, PersistentValuePtr funcTemplate) {
+  return (static_cast<V8Context *>(ctx))->GetClassConstructor(funcTemplate);
+}
+
  extern "C" void v8_add_method(ContextPtr ctx, char *str, FuncPtr callback, PersistentValuePtr funcTemplate) {
    (static_cast<V8Context *>(ctx))->AddWrappedMethod(str, callback,funcTemplate);
  }
@@ -69,6 +82,10 @@ extern "C" PersistentValuePtr v8_create_float(ContextPtr ctx, float val) {
 
 extern "C" PersistentValuePtr v8_create_double(ContextPtr ctx, double val) {
   return (static_cast<V8Context *>(ctx))->CreateDouble(val);
+}
+
+extern "C" PersistentValuePtr v8_create_object_array(ContextPtr ctx, PersistentValuePtr *ptrs, int length) {
+  return (static_cast<V8Context *>(ctx))->CreateObjectArray(ptrs, length);
 }
 
 
@@ -118,9 +135,50 @@ extern "C" bool v8_get_typed_backing(ContextPtr ctx, PersistentValuePtr val, cha
 }
 
 
+extern "C" bool v8_is_array_buffer(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsArrayBuffer(val);
+}
+extern "C" bool v8_is_data_view(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsDataView(val);
+}
+extern "C" bool v8_is_date(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsDate(val);
+}
+extern "C" bool v8_is_map(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsMap(val);
+}
+extern "C" bool v8_is_map_iterator(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsMapIterator(val);
+}
+extern "C" bool v8_is_promise(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsPromise(val);
+}
+extern "C" bool v8_is_regexp(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsRegExp(val);
+}
+extern "C" bool v8_is_set(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsSet(val);
+}
+extern "C" bool v8_is_set_iterator(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsSetIterator(val);
+}
+extern "C" bool v8_is_typed_array(ContextPtr ctx, PersistentValuePtr val) {
+  return (static_cast<V8Context *>(ctx))->IsTypedArray(val);
+}
+
+
 extern "C" PersistentValuePtr v8_eval(ContextPtr ctx, char *str,
                                       char *debugFilename) {
   return (static_cast<V8Context *>(ctx))->Eval(str, debugFilename);
+}
+
+extern "C" PersistentValuePtr v8_eval_with_context(ContextPtr ctx, char *str,
+                                      char *debugFilename, int lineNumber, int column) {
+  return (static_cast<V8Context *>(ctx))->EvalWithContext(str, debugFilename, lineNumber,column);
+}
+
+extern "C" PersistentValuePtr v8_compile_run_module(ContextPtr ctx, char *str,const char* filename) {
+  return (static_cast<V8Context *>(ctx))->CompileRunModule(str,filename);
 }
 
 extern "C" PersistentValuePtr v8_apply(ContextPtr ctx, PersistentValuePtr func,

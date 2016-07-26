@@ -1,6 +1,7 @@
 #ifndef V8WRAP_H
 #define V8WRAP_H
 #include <stdbool.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -9,8 +10,8 @@ typedef void *IsolatePtr;
 typedef void *ContextPtr;
 typedef void *PersistentValuePtr;
 typedef void *PlatformPtr;
-typedef void *FuncPtr;
-typedef void *ObjectPtr;
+typedef long long unsigned int FuncPtr;
+typedef long long unsigned int ObjectPtr;
 
 
 extern PlatformPtr v8_init();
@@ -19,7 +20,7 @@ extern IsolatePtr v8_create_isolate();
 
 extern void v8_release_isolate(IsolatePtr isolate);
 
-extern ContextPtr v8_create_context(IsolatePtr isolate);
+extern ContextPtr v8_create_context(IsolatePtr isolate, uint32_t id);
 
 extern void v8_release_context(ContextPtr ctx);
 
@@ -30,11 +31,19 @@ extern char *v8_execute(ContextPtr ctx, char *str, char *debugFilename);
 extern PersistentValuePtr v8_eval(ContextPtr ctx, char *str,
                                   char *debugFilename);
 
+extern PersistentValuePtr v8_eval_with_context(ContextPtr ctx, char *str,
+                                  char *debugFilename, int line, int column);
+
+extern PersistentValuePtr v8_compile_run_module(ContextPtr ctx, char *str,const char* filename);
+
 extern PersistentValuePtr v8_apply(ContextPtr ctx, PersistentValuePtr func,
                                    PersistentValuePtr self, int argc,
                                    PersistentValuePtr *argv);
 
 extern PersistentValuePtr v8_create_object_prototype(ContextPtr ctx);
+extern PersistentValuePtr v8_create_class_prototype(ContextPtr ctx,char *str);
+extern PersistentValuePtr v8_get_class_constructor(ContextPtr ctx, PersistentValuePtr funcTemplate);
+extern PersistentValuePtr v8_wrap_instance(ContextPtr ctx, ObjectPtr identifier, PersistentValuePtr instance);
 extern ObjectPtr v8_get_internal_pointer(ContextPtr ctx,PersistentValuePtr val);
 extern void v8_add_method(ContextPtr ctx, char *str, FuncPtr callback, PersistentValuePtr funcTemplate);
 extern PersistentValuePtr v8_wrap(ContextPtr ctx, ObjectPtr identifier, PersistentValuePtr funcTemplate);
@@ -47,6 +56,7 @@ extern PersistentValuePtr v8_create_bool(ContextPtr ctx, bool value);
 extern PersistentValuePtr v8_create_string(ContextPtr ctx, char *value);
 extern PersistentValuePtr v8_create_undefined(ContextPtr ctx);
 extern PersistentValuePtr v8_create_null(ContextPtr ctx);
+extern PersistentValuePtr v8_create_object_array(ContextPtr ctx, PersistentValuePtr *ptrs, int length);
 
 
 extern bool v8_convert_to_int(ContextPtr ctx, PersistentValuePtr, long int* out);
@@ -57,6 +67,18 @@ extern bool v8_convert_to_double(ContextPtr ctx, PersistentValuePtr, double* out
 extern bool v8_convert_to_bool(ContextPtr ctx, PersistentValuePtr, bool* out);
 
 extern bool v8_get_typed_backing(ContextPtr ctx, PersistentValuePtr, char** out, int* length);
+
+
+extern bool v8_is_array_buffer(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_data_view(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_date(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_map(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_map_iterator(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_promise(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_regexp(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_set(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_set_iterator(ContextPtr ctx, PersistentValuePtr val);
+extern bool v8_is_typed_array(ContextPtr ctx, PersistentValuePtr val);
 
 
 extern char *PersistentToJSON(ContextPtr ctx, PersistentValuePtr persistent);

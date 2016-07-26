@@ -28,7 +28,7 @@ void V8Isolate::PumpMessageLoop(v8::Platform *platform) {
   v8::platform::PumpMessageLoop(static_cast<v8::Platform *>(platform),isolate_);
 }
 
-V8Context* V8Isolate::MakeContext() { return new V8Context(isolate_); }
+V8Context* V8Isolate::MakeContext(uint32_t id) { return new V8Context(isolate_, id); }
 
 V8Isolate::~V8Isolate() { isolate_->Dispose(); }
 

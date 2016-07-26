@@ -18,7 +18,7 @@ class V8Isolate {
   V8Isolate();
   ~V8Isolate();
 
-  V8Context* MakeContext();
+  V8Context* MakeContext(uint32_t id);
   void PumpMessageLoop(v8::Platform *platform);
   // May be called any any time, will forcefully terminate the VM.
   void Terminate();

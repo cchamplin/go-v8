@@ -24,6 +24,11 @@ func (v *V8Context) ToValue(val interface{}) (*Value, error) {
 		return v.CreateRawFunc(fn)
 	}
 
+	if val == nil {
+		ret := C.v8_create_null(v.v8context)
+		return v.newValue(ret), nil
+	}
+
 	// Right now we mostly cast straight over to
 	// longlong/ulonglong but in the future we might be able
 	// to support more precise data types on the v8
@@ -105,13 +110,25 @@ func (v *V8Context) TryConvertInternal(value *Value) (interface{}, error) {
 		return nil, fmt.Errorf("Context mismatch")
 	}
 	ret := C.v8_get_internal_pointer(v.v8context, value.ptr)
-	if ret == nil {
+	if ret == 0 {
 		err := C.v8_error(v.v8context)
 		defer C.free(unsafe.Pointer(err))
 		return nil, fmt.Errorf("Failed to convert internal value: %s", C.GoString(err))
 	}
-	wrapped := *(*V8Wrapped)(unsafe.Pointer(ret))
+	internalsMu.RLock()
+	wrapped := internals[uint(ret)] //*(*V8Wrapped)(unsafe.Pointer(ret))
+	internalsMu.RUnlock()
 	return wrapped.internal, nil
+}
+
+// ToObjectArray will place multiple Values into a V8 array
+func (v *V8Context) ToObjectArray(values ...*Value) *Value {
+	ptrs := make([]C.PersistentValuePtr, len(values))
+	for i := 0; i < len(values); i++ {
+		ptrs[i] = values[i].ptr
+	}
+	ret := C.v8_create_object_array(v.v8context, (*C.PersistentValuePtr)(&ptrs[0]), C.int(len(values)))
+	return v.newValue(ret)
 }
 
 // ToInt8 Will attempt to convert a V8 value to a native int8
@@ -282,6 +299,86 @@ func (v *Value) ToString() (string, error) {
 	var str string
 	err := json.Unmarshal([]byte(v.ToJSON()), &str)
 	return str, err
+}
+
+func (v *Value) IsArrayBuffer() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_array_buffer(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsDataView() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_data_view(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsDate() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_date(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsMap() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_map(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsMapIterator() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_map_iterator(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsPromise() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_promise(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsRegExp() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_regexp(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsSet() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_set(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsSetIterator() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_set_iterator(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
+}
+
+func (v *Value) IsTypedArray() (bool, error) {
+	if v.ctx == nil || v.ptr == nil {
+		panic("Value or context were reset.")
+	}
+	ret := C.v8_is_typed_array(v.ctx.v8context, v.ptr)
+	return bool(ret), nil
 }
 
 // Burst converts a value that represents a JS Object and returns a map of
